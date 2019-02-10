@@ -48,7 +48,7 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
 
 /* if username - struct passwd *getpwnam(const char *name); */
 /* assume we get only username now */
-struct passwd *pwe = getpwnam(const char *url);
+struct passwd *pwe = getpwnam(url);
 if ( NULL == pwe) {
   /* user not found, we have to return json with error description  */
 }
