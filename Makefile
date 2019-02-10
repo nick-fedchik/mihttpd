@@ -1,10 +1,11 @@
 TARGET = microhttpd
-LIBS = -lmicrohttpd
+LIBS = -lmicrohttpd -ljson-c
 CC = gcc
 CFLAGS = -g -Wall 
+INCLUDES = -I/usr/include/json-c/
 
 OBJECTS = $(patsubst %.c, %.o, $(wildcard *.c))
-HEADERS = $(wildcard *.h)
+HEADERS = $(wildcard *.h) 
 
 .PHONY: clean all default
 
@@ -12,7 +13,7 @@ default: $(TARGET)
 all: default
 
 %.o: %.c $(HEADERS)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 .PRECIOUS: $(TARGET) $(OBJECTS)
 
