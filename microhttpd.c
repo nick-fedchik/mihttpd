@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
+#include <json-c/json.h>
 
 #define PORT 8888	// The port to listen incoming requests
 
@@ -27,6 +28,7 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
     int ret;
     char ipAddress[INET_ADDRSTRLEN];
     struct sockaddr_in *saddr;
+    struct passwd *pwe;
 
 /* Get the client IP for the log record */
     conninfo = 	MHD_get_connection_info(connection, MHD_CONNECTION_INFO_CLIENT_ADDRESS);
@@ -42,7 +44,33 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
 	return MHD_NO;		/* unexpected method */
 
 /* Here I will use libjson-c to prepare JSON response */
+/* get URI path - name or UID ? */
 
+/* if username - struct passwd *getpwnam(const char *name); */
+/* assume we get only username now */
+struct passwd *pwe = getpwnam(const char *url);
+if ( NULL == pwe) {
+  /* user not found, we have to return json with error description  */
+}
+/* otherwise user found, we have to return json with correct user description  */
+/* if userid - struct passwd *getpwuid(uid_t uid); */
+
+/* fulfill JSON structure for reply */
+/* json_object * json_object_new_object () */
+
+/*
+  /*Creating a json object*/
+  json_object * jobj = json_object_new_object();
+
+  /*Creating a json string*/
+  json_object *jstring = json_object_new_string("Joys of Programming");
+
+  /*Creating a json integer*/
+  json_object *jint = json_object_new_int(10);
+
+*/
+
+/* Reply page complete */
     response = MHD_create_response_from_buffer(strlen(page), (void *) page, MHD_RESPMEM_PERSISTENT);
     ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
