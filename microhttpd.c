@@ -68,6 +68,7 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
     /* if username - struct passwd *getpwnam(const char *name); */
     if (0 == strncmp(url, "/name", 5))
     {
+        /* max username length is 256 */
         char *n = NULL;
         urlparam = url + 4; // ptr to end of /name
         sscanf(urlparam, "%s/", n);
@@ -77,6 +78,7 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
     }
     else if (0 == strncmp(url, "/uid", 4))
     {
+        /*  __uid_t pw_uid	User ID is an unsigned int  */
         urlparam = url + 3; // ptr to end of /uid
         /* scanf string to num */
         /* assume we get only uid 1000  */
