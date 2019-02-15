@@ -9,14 +9,14 @@ Two libraries are used. First one is libmicrohttpd to quiclky implement HTTP ser
 Second one is libjson-c library to create various (maybe very conmplex) structures in JSON.
 
 ## Requiest API:
-* URL method GET, path /name/<username>
+* URL method GET, path **/name/`<username>`**
   
-* URL method GET, path /uid/<user_id>
+* URL method GET, path /uid/`<user_id>`
 
 
-**<username>** is a string up to 256 chars length.
+**`<username>`** is a string up to 256 chars length.
 
-**<user_id>** is a string with numbers up to 5 chars length.
+**`<user_id>`** is a string with numbers up to 5 chars length.
 
 By default, the server will receive HTTP requests on **8888** port.
 
