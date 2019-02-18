@@ -1,7 +1,7 @@
 TARGET = microhttpd
 LIBS = -lmicrohttpd -ljson-c
 CC = gcc
-CFLAGS = -g -Wall 
+CFLAGS = -g -Wall -static
 INCLUDES = -I/usr/include/json-c/
 
 OBJECTS = $(patsubst %.c, %.o, $(wildcard *.c))
