@@ -8,8 +8,47 @@
 #include <string.h>
 #include <json-c/json.h>
 #include <pwd.h>
+#include <stdint.h>
+#include <errno.h>
+#include <time.h>
 
-#define PORT 8888 // The TCP port to listen incoming requests
+#define PORT 8888 /* The TCP port to listen incoming requests */
+#define MAX_IP_LEN 16
+#define MAX_USERNAME_LEN 256
+#define MAX_UID_LEN 10
+#define UINT_MAX_VAL 4294967295U
+#define DEBUG_LOGGING 0 /* Set to 1 to enable debug logging, 0 to disable */
+#define MAX_REQUESTS_PER_SECOND 100 /* Basic rate limiting threshold */
+
+/* Rate limiting state: track requests per IP */
+static struct {
+    const char *ip;
+    uint32_t request_count;
+    time_t last_reset;
+} rate_limit_state = { NULL, 0, 0 };
+
+/* Helper function to check rate limiting */
+static int32_t check_rate_limit(const char *client_ip)
+{
+    time_t now = time(NULL);
+
+    /* Reset counter every second */
+    if (now != rate_limit_state.last_reset)
+    {
+        rate_limit_state.request_count = 0;
+        rate_limit_state.last_reset = now;
+    }
+
+    rate_limit_state.request_count++;
+
+    /* Reject if exceeds threshold */
+    if (rate_limit_state.request_count > MAX_REQUESTS_PER_SECOND)
+    {
+        return 0; /* Rate limit exceeded */
+    }
+
+    return 1; /* Request allowed */
+}
 
 /* This is a helper function to dump key:value params of HTTP Request header */
 int print_key_value(void *cls, enum MHD_ValueKind kind,
@@ -19,83 +58,127 @@ int print_key_value(void *cls, enum MHD_ValueKind kind,
     return MHD_YES;
 }
 
-int answer_to_connection(void *cls, struct MHD_Connection *connection,
+int32_t answer_to_connection(void *cls, struct MHD_Connection *connection,
                          const char *url,
                          const char *method, const char *version,
                          const char *upload_data,
                          size_t *upload_data_size, void **con_cls)
 {
-    struct MHD_Response *response;
-    const union MHD_ConnectionInfo *conninfo;
-    int ret;
-    char ipAddress[INET_ADDRSTRLEN];
-    struct sockaddr_in *saddr;
-    struct passwd *pwe = NULL; // Our main structure to reply on client's request
+    struct MHD_Response *response = NULL;
+    const union MHD_ConnectionInfo *conninfo = NULL;
+    int32_t ret = MHD_NO;
+    char ipAddress[MAX_IP_LEN];
+    struct sockaddr_in *saddr = NULL;
+    struct passwd *pwe = NULL; /* User structure from getpw* call */
     const void *json_reply = NULL;
-    const char *n = NULL; // helper - floating pointer in the const url
+    const char *n = NULL; /* Helper pointer for URL parsing */
 
     /* Get the client IP for the log record */
     conninfo = MHD_get_connection_info(connection,
                                        MHD_CONNECTION_INFO_CLIENT_ADDRESS);
-    saddr = (struct sockaddr_in *)conninfo->client_addr;
-    inet_ntop(AF_INET, &saddr->sin_addr, ipAddress, INET_ADDRSTRLEN);
+    if (NULL == conninfo || NULL == conninfo->client_addr)
+    {
+        strncpy(ipAddress, "unknown", MAX_IP_LEN - 1);
+        ipAddress[MAX_IP_LEN - 1] = '\0';
+    }
+    else
+    {
+        saddr = (struct sockaddr_in *)conninfo->client_addr;
+        if (NULL == inet_ntop(AF_INET, &saddr->sin_addr, ipAddress, MAX_IP_LEN))
+        {
+            strncpy(ipAddress, "unknown", MAX_IP_LEN - 1);
+            ipAddress[MAX_IP_LEN - 1] = '\0';
+        }
+    }
     
-    // debug (log record)
-    printf("%s New %s request with url %s\n", ipAddress, method, url);
+    /* Check rate limiting */
+    if (0 == check_rate_limit(ipAddress))
+    {
+        return MHD_NO; /* Rate limit exceeded, reject request */
+    }
 
-    // debug (key:value)
-    /* 	Here it list all Key:Value pairs from HTTP request */
-    //    MHD_get_connection_values (connection, MHD_HEADER_KIND, &print_key_value, NULL);
+    /* Conditional debug logging - disable in production */
+#if DEBUG_LOGGING
+    printf("%s New %s request with url %s\n", ipAddress, method, url);
+    /* List all key:value pairs from HTTP request */
+    /*  MHD_get_connection_values (connection, MHD_HEADER_KIND, &print_key_value, NULL); */
+#endif
 
     if (0 != strcmp(method, "GET"))
         return MHD_NO; /* unexpected method */
 
-    /* We expect to get in url
-    /uid/'num'
-    or
-    /name/'name'
-    */
-    n = url; // set n to begin of const url
-    /* get URI path - name or UID ? */
+    /* Validate URL length - prevent DoS via huge URLs */
+    if (strlen(url) > 512)
+        return MHD_NO; /* URL too long */
+
+    /* Check for path traversal attempts */
+    if (NULL != strstr(url, ".."))
+        return MHD_NO; /* path traversal attempt detected */
+
+    /* Parse URI path: /uid/num or /name/name */
+    n = url; /* set n to begin of URL string */
+
     if (0 == strncmp(n, "/name/", 6))
     {
-        /* if we got username - struct passwd *getpwnam(const char *name); */
-        // printf("URL name request found\n");
-        n = n + 6;       // offset to username in url string
-        size_t plen = 0; //parameter length
-        plen = strlen(n);
-        if ((plen > 0) && (plen <= 256))
+        /* Process username lookup via getpwnam_r() - thread-safe version */
+        const char *username_start = n + 6; /* offset to username in URL string */
+        char decoded_username[MAX_USERNAME_LEN];
+        size_t plen = strlen(username_start);
+
+        if ((plen > 0) && (plen <= MAX_USERNAME_LEN - 1))
         {
-            // debug
-            // printf("name param `%s`, length %li\n", n, (long unsigned int)plen);
-            /* assume we get only username now */
-            pwe = getpwnam(n);
+            /* URL decode the username (handles %2f, %20, etc.) */
+            size_t decoded_len = MHD_http_unescape(username_start);
+            strncpy(decoded_username, username_start, decoded_len);
+            decoded_username[decoded_len] = '\0';
+
+            struct passwd pwd_buffer;
+            struct passwd *result = NULL;
+            char pwbuf[1024];
+
+            if (0 == getpwnam_r(decoded_username, &pwd_buffer, pwbuf, sizeof(pwbuf), &result))
+            {
+                pwe = result;
+            }
         }
     }
-    else if (0 == strncmp(url, "/uid/", 5))
+    else if (0 == strncmp(n, "/uid/", 5))
     {
-        /*  __uid_t pw_uid	User ID is an unsigned int  */
-        /* if we got uid in url, then call  struct passwd *getpwuid(const char *name); */
-        n = n + 5;       // offset to uid in url string
-        size_t plen = 0; //parameter length
-        plen = strlen(n);
-        /* (__uid_t is an unsigned int); 
-        Maximum value for a variable of type unsigned int.	4294967295 (0xffffffff)
-        and we should get a sting from 1 to 10 digits long prior to conversation.
-         */
-        if ((plen > 0) && (plen <= 10))
-        {
-            unsigned long the_uid;
-            char *num_end;
+        /* Process UID lookup via getpwuid_r() - thread-safe version */
+        const char *uid_start = n + 5; /* offset to UID in URL string */
+        char decoded_uid[MAX_UID_LEN];
+        size_t plen = strlen(uid_start);
 
-            the_uid = strtoul(n, &num_end, 10);
-            printf("uid value=%li, n=%p e=%p (%lu)\n", the_uid, n, num_end, num_end - n);
-            if (num_end - n > 0) // did we really convert or there is no correct digits?
+        if ((plen > 0) && (plen <= MAX_UID_LEN - 1))
+        {
+            /* URL decode the UID string (handles %20, etc.) */
+            size_t decoded_len = MHD_http_unescape(uid_start);
+            strncpy(decoded_uid, uid_start, decoded_len);
+            decoded_uid[decoded_len] = '\0';
+
+            uint32_t the_uid;
+            char *num_end = NULL;
+            int32_t conversion_len;
+
+            the_uid = (uint32_t)strtoul(decoded_uid, &num_end, 10);
+
+            if (NULL != num_end)
             {
-                if ((the_uid >= 0) && (the_uid < 4294967295)) // check the u_int range
+                conversion_len = (int32_t)(num_end - decoded_uid);
+                if (conversion_len > 0)
                 {
-                    // printf("call getpwuid(%li)\n", the_uid); //debug
-                    pwe = getpwuid((__uid_t)the_uid);
+                    if (the_uid <= UINT_MAX_VAL)
+                    {
+                        struct passwd pwd_buffer;
+                        struct passwd *result = NULL;
+                        char pwbuf[1024];
+
+                        if (0 == getpwuid_r((__uid_t)the_uid, &pwd_buffer, pwbuf,
+                                           sizeof(pwbuf), &result))
+                        {
+                            pwe = result;
+                        }
+                    }
                 }
             }
         }
@@ -108,7 +191,12 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
     /* Creating a json object */
     json_object *jobj = json_object_new_object();
 
-    if (NULL == pwe) // in error reply or no getpwXXX happend
+    if (NULL == jobj)
+    {
+        return MHD_NO; /* JSON object creation failed */
+    }
+
+    if (NULL == pwe) /* in error reply or no getpwXXX happened */
     {
         /* user is not found, or uid is not found, or wegot unexpected/incorrect URI - 
         we have to return json with error description.
@@ -129,15 +217,29 @@ int answer_to_connection(void *cls, struct MHD_Connection *connection,
     }
 
     json_reply = json_object_to_json_string(jobj);
-    // debug output
-    // printf("JSON:\n%s\n\n", (const char *)json_reply);
+    /* Debug output: printf("JSON:\n%s\n\n", (const char *)json_reply); */
 
     /* Reply page complete */
-    response = MHD_create_response_from_buffer(strlen(json_reply),
-                                               (void *)json_reply,
-                                               MHD_RESPMEM_PERSISTENT);
+    char *json_str = strdup(json_reply);
+    json_object_put(jobj); // Free JSON object after converting to string
+
+    if (NULL == json_str)
+    {
+        return MHD_NO; /* Memory allocation failed */
+    }
+
+    response = MHD_create_response_from_buffer(strlen(json_str),
+                                               (void *)json_str,
+                                               MHD_RESPMEM_MUST_FREE);
+    if (NULL == response)
+    {
+        free(json_str);
+        return MHD_NO;
+    }
+
+    MHD_add_response_header(response, "Content-Type", "application/json");
+
     ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
-    /* yes, we need to handle ret value of the response here, but ToDo again... */
     MHD_destroy_response(response);
 
     return ret;
